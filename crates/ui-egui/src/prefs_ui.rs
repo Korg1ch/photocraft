@@ -3994,4 +3994,32 @@ mod tests {
         assert!(crate::dialogs::confirm(&mut app, d).is_ok());
     }
 
+    /// #6531, #6532: the Content-Aware Fill dialog shows no Margin, Seed or Channel and doesn't
+    /// send them once it has been drawn, so Rectangular fills from around the selection instead
+    /// of filling it black (the dialog used to send margin 0).
+    #[test]
+    fn content_aware_fill_dialog_keeps_engine_only_params_out() {
+        let (mut app, _) = app_with_store();
+        let ctx = egui::Context::default();
+        app.run("file.new", json!({"width": 64, "height": 48, "background": "white"})).unwrap();
+        app.sync_views();
+        app.run("select.rect", json!({"x": 28, "y": 18, "width": 8, "height": 10})).unwrap();
+        app.run("edit.fill", json!({"color": "#ff0000"})).unwrap();
+        app.run("select.rect", json!({"x": 26, "y": 16, "width": 12, "height": 14})).unwrap();
+        let d = crate::menus::invoke(&mut app, &ctx, "edit.contentAwareFill", json!({})).unwrap()["dialog"].as_u64().unwrap();
+        let f = &mut app.ui.dialog_mut(d).unwrap().fields;
+        f.insert("sampling".into(), json!("rectangular"));
+        for _ in 0..2 {
+            egui::Context::default().run_ui(Default::default(), |ui| crate::filter_dialog::body(ui, f)).textures_delta.clear();
+        }
+        let params = crate::filter_dialog::params_of(f);
+        for k in ["margin", "seed", "channel"] {
+            assert!(params.get(k).is_none(), "{k} came back: {params}");
+        }
+        assert_eq!(params["sampling"], "rectangular", "the visible rows still draw");
+        crate::dialogs::confirm(&mut app, d).unwrap();
+        let st = app.session.active().unwrap();
+        let px = st.doc.layer(st.active_layer.unwrap()).unwrap().surface().unwrap().pixel(31, 22);
+        assert!(px[..3].iter().all(|c| *c > 0.5), "filled from the white around the selection, not black: {px:?}");
+    }
 }
