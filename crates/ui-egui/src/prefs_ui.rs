@@ -914,9 +914,8 @@ pub fn invoke(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: &V
             let d = crate::filter_dialog::open(app, id);
             if let Some(dm) = d.and_then(|d| app.ui.dialog_mut(d)) {
                 dm.fields.insert("__preview".into(), json!(true));
-                for k in ["margin", "seed", "channel"] {
-                    dm.fields.remove(k);
-                }
+                // Photoshop's dialog has no Margin, Channel or Seed; they stay engine-only.
+                crate::filter_dialog::hide(&mut dm.fields, &["margin", "seed", "channel"]);
             }
             dialog(d)
         }
@@ -3994,4 +3993,5 @@ mod tests {
         let d = crate::menus::invoke(&mut app, &ctx, "edit.presets.presetManager", json!({})).unwrap()["dialog"].as_u64().unwrap();
         assert!(crate::dialogs::confirm(&mut app, d).is_ok());
     }
+
 }
