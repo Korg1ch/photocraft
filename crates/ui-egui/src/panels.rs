@@ -2151,6 +2151,101 @@ mod navigator_wheel_tests {
         assert!((app.ui.views[0].zoom - 1.0).abs() < 1e-4, "wheel outside preview leaves zoom unchanged");
     }
 
+    /// #6872: the zoom a Navigator ⌘/Ctrl-drag sets: the rectangle fills the canvas, centred.
+    #[test]
+    fn navigator_zoom_to_fits_the_rectangle_in_the_canvas() {
+        let fresh = || crate::state::View { doc_size: [200, 100], zoom: 1.0, center: [100.0, 50.0], ..Default::default() };
+        let canvas = vec2(800.0, 600.0);
+        let r = Rect::from_min_max(pos2(50.0, 25.0), pos2(100.0, 50.0));
+        // 50 × 25 px on 800 × 600 pt: the width limits it, 16 points per pixel.
+        let mut v = fresh();
+        navigator_zoom_to(&mut v, r, [200, 100], canvas, 1.0, 1.0);
+        assert_eq!((v.zoom, v.center, v.fit_pending), (crate::zoom_levels::clamp(16.0, [200, 100]), [75.0, 37.5], false));
+        // Device pixels per point and a 2:1 pixel aspect scale it as the canvas shows pixels.
+        let mut v = fresh();
+        navigator_zoom_to(&mut v, r, [200, 100], canvas, 2.0, 2.0);
+        assert_eq!(v.zoom, crate::zoom_levels::clamp(16.0, [200, 100]), "8 points per pixel across, at 2 device pixels per point");
+        // Off the document: only the part on it counts.
+        let mut v = fresh();
+        navigator_zoom_to(&mut v, Rect::from_min_max(pos2(150.0, 50.0), pos2(400.0, 300.0)), [200, 100], canvas, 1.0, 1.0);
+        assert_eq!(v.center, [175.0, 75.0]);
+        // Under 2 px across: one step in on its centre.
+        let mut v = fresh();
+        navigator_zoom_to(&mut v, Rect::from_min_max(pos2(10.0, 10.0), pos2(11.0, 40.0)), [200, 100], canvas, 1.0, 1.0);
+        assert_eq!((v.zoom, v.center), (crate::zoom_levels::step(1.0, 1, [200, 100]), [10.5, 25.0]));
+        // Not a number, or wholly off the document: nothing changes.
+        for bad in [Rect::from_min_max(pos2(f32::NAN, 0.0), pos2(10.0, 10.0)), Rect::from_min_max(pos2(300.0, 300.0), pos2(400.0, 400.0))] {
+            let mut v = fresh();
+            navigator_zoom_to(&mut v, bad, [200, 100], canvas, 1.0, 1.0);
+            assert_eq!((v.zoom, v.center), (1.0, [100.0, 50.0]), "{bad:?}");
+        }
+    }
+
+    /// One frame of the Navigator with pointer `events` and `modifiers` held.
+    fn frame_with(app: &mut PhotocraftApp, ctx: &egui::Context, modifiers: Modifiers, mut events: Vec<Event>) {
+        events.insert(0, Event::ModifiersChanged(modifiers));
+        let input = RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(430.0, 460.0))), events, ..Default::default() };
+        ctx.run_ui(input, |ui| navigator(app, ui)).textures_delta.clear();
+    }
+
+    /// A drag over the Navigator's preview between document points `from` and `to`.
+    fn drag(app: &mut PhotocraftApp, ctx: &egui::Context, modifiers: Modifiers, from: [f32; 2], to: [f32; 2]) {
+        let preview = last_navigator_preview(ctx).expect("the preview");
+        let s = preview.width() / 200.0;
+        let at = |p: [f32; 2]| preview.min + vec2(p[0], p[1]) * s;
+        let (a, b) = (at(from), at(to));
+        let button = |pos, pressed| Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers };
+        frame_with(app, ctx, modifiers, vec![Event::PointerMoved(a), button(a, true)]);
+        frame_with(app, ctx, modifiers, vec![Event::PointerMoved(a.lerp(b, 0.5))]);
+        frame_with(app, ctx, modifiers, vec![Event::PointerMoved(b)]);
+        frame_with(app, ctx, modifiers, vec![button(b, false)]);
+        frame_with(app, ctx, Modifiers::NONE, vec![]);
+    }
+
+    /// #6872: ⌘/Ctrl-dragging a rectangle over the preview zooms the view to it, as in
+    /// Photoshop; a plain drag still only moves the view.
+    #[test]
+    fn navigator_command_drag_zooms_to_the_rectangle() {
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 200, "height": 100})).unwrap();
+        app.sync_views();
+        app.ui.views[0].zoom = 1.0;
+        app.ui.views[0].fit_pending = false;
+        let ctx = egui::Context::default();
+        PhotocraftApp::setup_context(&ctx, crate::theme::ThemeKind::ALL[0]);
+        // The preview settles once the zoom row under it has been measured.
+        for _ in 0..3 {
+            frame(&mut app, &ctx, pos2(5.0, 5.0), 0.0);
+        }
+        // A plain drag pans and keeps the zoom.
+        drag(&mut app, &ctx, Modifiers::NONE, [50.0, 25.0], [100.0, 50.0]);
+        assert_eq!(app.ui.views[0].zoom, 1.0);
+        let c = app.ui.views[0].center;
+        assert!((c[0] - 100.0).abs() < 1.0 && (c[1] - 50.0).abs() < 1.0, "the view follows the pointer: {c:?}");
+        // ⌘/Ctrl-drag: the rectangle fills the canvas (`last_canvas_rect`, 800 × 600 pt).
+        drag(&mut app, &ctx, Modifiers::COMMAND, [50.0, 25.0], [100.0, 50.0]);
+        let mut expected = app.ui.views[0].clone();
+        navigator_zoom_to(
+            &mut expected,
+            Rect::from_min_max(pos2(50.0, 25.0), pos2(100.0, 50.0)),
+            [200, 100],
+            vec2(800.0, 600.0),
+            app.canvas_ppp(),
+            app.ui.view.display_aspect(),
+        );
+        let v = &app.ui.views[0];
+        assert!((v.zoom - expected.zoom).abs() / expected.zoom < 0.05, "{} vs {}", v.zoom, expected.zoom);
+        assert!(
+            (v.center[0] - 75.0).abs() < 1.0 && (v.center[1] - 37.5).abs() < 1.0,
+            "centred on the rectangle: {:?} (zoom {}, expected {:?})",
+            v.center,
+            v.zoom,
+            (expected.zoom, expected.center)
+        );
+        assert!(v.zoom > 1.0 && !v.fit_pending);
+        assert!(ctx.data(|d| d.get_temp::<Pos2>(navigator_zoom_drag_id())).is_none(), "the drag is over");
+    }
+
     /// #4840: under the preview, one row as in Photoshop: the zoom in percent, Zoom Out, the
     /// slider and Zoom In. The buttons step the zoom like View › Zoom In / Out.
     #[test]
