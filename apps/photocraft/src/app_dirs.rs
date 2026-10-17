@@ -10,8 +10,8 @@
 //! 3. The platform convention: macOS `~/Library/Application Support/Photocraft`, Windows
 //!    `%APPDATA%\Photocraft`, Linux `$XDG_CONFIG_HOME/photocraft` or `~/.config/photocraft`.
 //!
-//! One exception: on Windows the platform convention keeps crash-recovery autosaves out of the
-//! roaming profile ([`recovery_dir`]).
+//! One exception: the platform convention keeps crash-recovery autosaves out of what is synced
+//! with the settings: the Windows roaming profile and the Linux config folder ([`recovery_dir`]).
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -77,18 +77,35 @@ pub fn recovery_dir() -> Option<PathBuf> {
     })
 }
 
-/// The recovery folder for `data` (#5648). Autosaves hold whole documents and are rewritten every
-/// few minutes, so on Windows the platform convention puts them in the machine-local
-/// `%LOCALAPPDATA%\Photocraft\Recovery`: the roaming `%APPDATA%` may be synced at sign-in and
-/// sign-out or capped by policy. They stay out of `%TEMP%`, which cleanup tools may empty before
-/// a crashed document is recovered. The override and portable folders keep everything in one
-/// place, and other platforms already keep these folders local.
+/// The recovery folder for `data`. Autosaves hold whole documents and are rewritten every few
+/// minutes, so with the platform convention they stay out of what is synced with the settings:
+/// - Windows (#5648): the machine-local `%LOCALAPPDATA%\Photocraft\Recovery`; the roaming
+///   `%APPDATA%` may be synced at sign-in and sign-out or capped by policy.
+/// - Linux and other XDG systems (#6612): `$XDG_STATE_HOME/photocraft/Recovery`, by default
+///   `~/.local/state/photocraft/Recovery`, where the XDG Base Directory spec puts state that
+///   should outlive a restart but isn't configuration; dotfile managers and config sync often copy
+///   `~/.config` whole. As the spec asks, a relative `XDG_STATE_HOME` is ignored.
+/// - macOS: `~/Library/Application Support/Photocraft/Recovery` as before. Apple's guidelines put
+///   app-created data that can't be regenerated there; `~/Library/Caches` may be purged by the
+///   system.
+///
+/// They are never in a temp or cache folder, which cleanup tools may empty before a crashed
+/// document is recovered. The override and portable folders keep everything in one place.
 pub fn resolve_recovery(data: &DataDir, env: impl Fn(&str) -> Option<OsString>) -> Option<PathBuf> {
-    if cfg!(windows)
-        && data.mode == Mode::Platform
-        && let Some(local) = env("LOCALAPPDATA").filter(|l| !l.is_empty())
-    {
-        return Some(PathBuf::from(local).join("Photocraft").join(RECOVERY));
+    if data.mode == Mode::Platform {
+        if cfg!(windows) {
+            if let Some(local) = env("LOCALAPPDATA").filter(|l| !l.is_empty()) {
+                return Some(PathBuf::from(local).join("Photocraft").join(RECOVERY));
+            }
+        } else if !cfg!(target_os = "macos") {
+            let state = env("XDG_STATE_HOME")
+                .map(PathBuf::from)
+                .filter(|s| s.is_absolute())
+                .or_else(|| env("HOME").filter(|h| !h.is_empty()).map(|h| PathBuf::from(h).join(".local").join("state")));
+            if let Some(state) = state {
+                return Some(state.join("photocraft").join(RECOVERY));
+            }
+        }
     }
     data.dir.as_ref().map(|d| d.join(RECOVERY))
 }
