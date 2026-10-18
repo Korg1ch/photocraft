@@ -1453,6 +1453,23 @@ mod tests {
         assert!(params(f).get("__printers").is_none());
     }
 
+    /// #7410: File › Print opens with the settings of the last print, also those remembered from
+    /// an earlier session (the preferences), before anything was printed in this one.
+    #[test]
+    fn print_dialog_opens_with_the_settings_remembered_from_an_earlier_session() {
+        let (mut app, _) = app();
+        app.session.prefs.edit(|p| {
+            p.dialogs.insert(
+                photocraft_engine::print_cmds::REMEMBERED.into(),
+                json!({"paper": "a5", "scale": 50, "orientation": "landscape", "intent": "perceptual"}),
+            );
+        });
+        let id = open_print(&mut app);
+        let f = &app.ui.dialog_mut(id).unwrap().fields;
+        assert_eq!((&f["paper"], &f["scale"], &f["orientation"], &f["intent"]), (&json!("a5"), &json!(50), &json!("landscape"), &json!("perceptual")));
+        assert_eq!(f["copies"], 1, "what wasn't remembered keeps its default");
+    }
+
     #[test]
     fn print_dialog_does_not_inherit_scripted_send_override() {
         for send in [false, true] {
