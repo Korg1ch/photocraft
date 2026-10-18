@@ -76,7 +76,7 @@ pub fn invoke(app: &mut PhotocraftApp, ctx: &egui::Context, id: &str, params: &V
             app.session.active()?;
             json!({"dialog": open_print(app)})
         }
-        "file.printOneCopy" if app.session.file_menu.last_print.is_none() => {
+        "file.printOneCopy" if photocraft_engine::print_cmds::last_print(&app.session).is_none() => {
             app.session.active()?;
             json!({"dialog": open_print(app)})
         }
@@ -729,7 +729,8 @@ pub fn open_print(app: &mut PhotocraftApp) -> u64 {
     // Asked once per opening: the Printer menu lists what the spooler knows now.
     let printers = app.session.execute("file.printers", json!({})).unwrap_or_default();
     f.insert("__systemPrinters".into(), printers["printers"].clone());
-    if let Some(Value::Object(m)) = app.session.file_menu.last_print.clone() {
+    // The settings of the last print, also from an earlier session (#7410).
+    if let Some(Value::Object(m)) = photocraft_engine::print_cmds::last_print(&app.session) {
         f.extend(m);
     }
     for (k, v) in [
