@@ -1526,6 +1526,38 @@ mod tests {
         assert_eq!(params["amount"].as_f64(), Some(37.5));
     }
 
+    /// #7400: Lens Blur's Source lists the document's alpha channels, by name, each choosable even
+    /// when two share a name; `depthChannel` is set through that menu, not shown as a field, and
+    /// like the other references it isn't remembered, so a remembered `channel` source opens as None.
+    #[test]
+    fn lens_blur_source_lists_the_alpha_channels() {
+        let spec = photocraft_engine::commands::find(LENS_BLUR).unwrap().params;
+        let params = parse_spec(spec);
+        assert!(params.iter().any(|p| p.key == "depthChannel" && p.kind == Kind::Json), "depthChannel is no dialog field");
+        let mut app = PhotocraftApp::new(photocraft_engine::Session::new(), crate::Services::default());
+        app.run("file.new", json!({"width": 20, "height": 10})).unwrap();
+        app.run("channel.new", json!({"name": "Depth Map", "fill": "white"})).unwrap();
+        let id = open(&mut app, LENS_BLUR).unwrap();
+        assert_eq!(app.ui.dialog_mut(id).unwrap().fields["__channels"], json!(["Depth Map"]));
+        // The menu's values are channel indices, so two channels with one name are both choosable.
+        app.run("channel.new", json!({"name": "Depth Map", "fill": "black"})).unwrap();
+        let id = open(&mut app, LENS_BLUR).unwrap();
+        let names: Vec<String> = serde_json::from_value(app.ui.dialog_mut(id).unwrap().fields["__channels"].clone()).unwrap();
+        assert_eq!(names, ["Depth Map", "Depth Map"]);
+        assert_eq!((channel_choice(0), channel_choice(1)), ("channel:0".to_string(), "channel:1".to_string()));
+        assert_eq!(channel_index(&json!(1), &names), Some(1), "the second one by its index");
+        assert_eq!(channel_index(&json!("Depth Map"), &names), Some(0), "a name is the first so named, as the engine reads it");
+        assert_eq!(channel_index(&json!(2), &names), None);
+
+        app.session.prefs.edit(|p| {
+            p.dialogs.insert(LENS_BLUR.into(), json!({"depthMap": "channel", "depthChannel": "Depth Map"}));
+        });
+        let id = open(&mut app, LENS_BLUR).unwrap();
+        let f = &app.ui.dialog_mut(id).unwrap().fields;
+        assert_eq!(f["depthMap"], "none", "no channel was remembered with it");
+        assert!(f.get("depthChannel").is_none());
+    }
+
     #[test]
     fn wide_positive_ranges_use_the_logarithmic_slider_path() {
         assert!(uses_logarithmic_slider(0.1, 1000.0), "Gaussian Blur radius");
