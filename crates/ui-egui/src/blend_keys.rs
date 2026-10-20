@@ -1,8 +1,9 @@
-//! ⇧+ and ⇧− step through the blend modes, as in Photoshop (#3102): the Brush's or Pencil's mode
+//! ⇧+ and ⇧− step through the blend modes, as in Photoshop (#3102), and ⇧⌥ with a letter picks
+//! one directly (⇧⌥M Multiply, ⇧⌥S Screen…; [`LETTERS`], #6446): the Brush's or Pencil's mode
 //! while one of them is active, the Gradient's with the Gradient tool, and otherwise (Move, the
-//! selection tools…) the active layer's. The list wraps at either end. Each press is one call of
-//! an engine command (`tools.setBrush`, `layer.setProps`), so it records and undoes like a pick
-//! from the dropdown.
+//! selection tools…) the active layer's. The step list wraps at either end. Each press is one
+//! call of an engine command (`tools.setBrush`, `layer.setProps`), so it records and undoes like
+//! a pick from the dropdown.
 
 use egui::{Event, Key};
 use photocraft_color::BlendMode;
@@ -24,10 +25,47 @@ pub fn stepped(modes: &[BlendMode], current: BlendMode, step: i32) -> Option<Ble
     modes.get(usize::try_from(next).ok()?).copied()
 }
 
+/// Photoshop's ⇧⌥ (Shift+Alt) letter for each blend mode that has one. Behind and Clear (⇧⌥Q,
+/// ⇧⌥R) are painting-only modes PhotoCraft doesn't have; Darker Color, Lighter Color, Subtract and
+/// Divide have no letter in Photoshop either. ⇧⌥P is Pass Through, for a group.
+pub const LETTERS: [(Key, BlendMode); 24] = [
+    (Key::N, BlendMode::Normal),
+    (Key::I, BlendMode::Dissolve),
+    (Key::K, BlendMode::Darken),
+    (Key::M, BlendMode::Multiply),
+    (Key::B, BlendMode::ColorBurn),
+    (Key::A, BlendMode::LinearBurn),
+    (Key::G, BlendMode::Lighten),
+    (Key::S, BlendMode::Screen),
+    (Key::D, BlendMode::ColorDodge),
+    (Key::W, BlendMode::LinearDodge),
+    (Key::O, BlendMode::Overlay),
+    (Key::F, BlendMode::SoftLight),
+    (Key::H, BlendMode::HardLight),
+    (Key::V, BlendMode::VividLight),
+    (Key::J, BlendMode::LinearLight),
+    (Key::Z, BlendMode::PinLight),
+    (Key::L, BlendMode::HardMix),
+    (Key::E, BlendMode::Difference),
+    (Key::X, BlendMode::Exclusion),
+    (Key::U, BlendMode::Hue),
+    (Key::T, BlendMode::Saturation),
+    (Key::C, BlendMode::Color),
+    (Key::Y, BlendMode::Luminosity),
+    (Key::P, BlendMode::PassThrough),
+];
+
+/// A blend-mode key press: a step through the list, or one mode picked by its letter.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Press {
+    Step(i32),
+    Pick(BlendMode),
+}
+
 /// Consumes this frame's ⇧+ / ⇧− presses (⇧= on a US layout is `+`; on a German one
 /// `layout_keys::apply` has already turned ⇧+ and ⇧- into `+` and `-`) and applies them.
 pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
-    let steps: Vec<i32> = ctx.input_mut(|i| {
+    let presses: Vec<Press> = ctx.input_mut(|i| {
         let mut out = Vec::new();
         i.events.retain(|e| match e {
             Event::Key { key, pressed: true, modifiers, .. } if modifiers.shift && !modifiers.command && !modifiers.ctrl && !modifiers.alt => {
@@ -36,24 +74,48 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
                     Key::Minus => -1,
                     _ => return true,
                 };
-                out.push(step);
+                out.push(Press::Step(step));
                 false
+            }
+            // ⇧⌥ + letter (a binding of the user's to the same keys has already run and taken it).
+            Event::Key { key, pressed: true, modifiers, .. } if modifiers.shift && modifiers.alt && !modifiers.command && !modifiers.ctrl => {
+                match LETTERS.iter().find(|(k, _)| k == key) {
+                    Some((_, mode)) => {
+                        out.push(Press::Pick(*mode));
+                        false
+                    }
+                    None => true,
+                }
             }
             _ => true,
         });
         out
     });
-    for step in steps {
-        press(app, step);
+    for p in presses {
+        match p {
+            Press::Step(step) => press(app, step),
+            Press::Pick(mode) => pick(app, mode),
+        }
     }
+}
+
+/// One ⇧⌥ + letter press: `mode` for whatever ⇧+ / ⇧− would step, when that target offers it
+/// (Pass Through only for a group, Dissolve not for the Gradient…).
+pub fn pick(app: &mut PhotocraftApp, mode: BlendMode) {
+    set(app, |modes, _| modes.contains(&mode).then_some(mode));
 }
 
 /// One ⇧+ (`step` 1) or ⇧− (`step` -1) press.
 pub fn press(app: &mut PhotocraftApp, step: i32) {
+    set(app, |modes, current| stepped(modes, current, step));
+}
+
+/// Sets the blend mode the keys target to `choose(modes it offers, its current mode)`.
+fn set(app: &mut PhotocraftApp, choose: impl Fn(&[BlendMode], BlendMode) -> Option<BlendMode>) {
     match app.ui.tool {
         Tool::Brush | Tool::Pencil => {
             let current = app.session.tools.brush.mode;
-            if let Some(mode) = stepped(&BlendMode::LAYER_MODES, current, step)
+            if let Some(mode) = choose(&BlendMode::LAYER_MODES, current)
                 && let Ok(mode) = serde_json::to_value(mode)
             {
                 let _ = app.run("tools.setBrush", json!({ "brush": { "mode": mode } }));
@@ -61,7 +123,7 @@ pub fn press(app: &mut PhotocraftApp, step: i32) {
         }
         Tool::Gradient => {
             let before = app.ui.tool_options.clone();
-            if let Some(mode) = stepped(&BlendMode::LAYER_MODES, before.gradient_blend_mode, step) {
+            if let Some(mode) = choose(&BlendMode::LAYER_MODES, before.gradient_blend_mode) {
                 app.ui.tool_options.gradient_blend_mode = mode;
                 // Live mode: a selected gradient fill layer follows, as with the dropdown.
                 crate::gradient_ui::options_changed(app, &before);
@@ -77,7 +139,7 @@ pub fn press(app: &mut PhotocraftApp, step: i32) {
                 return;
             }
             let modes: Vec<BlendMode> = std::iter::once(BlendMode::PassThrough).filter(|_| layer.is_group()).chain(BlendMode::LAYER_MODES).collect();
-            if let Some(mode) = stepped(&modes, layer.blend, step) {
+            if let Some(mode) = choose(&modes, layer.blend) {
                 let id = layer.id.0;
                 let _ = app.run("layer.setProps", json!({ "layer": id, "blend": mode.label() }));
             }

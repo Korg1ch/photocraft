@@ -673,6 +673,9 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
         }
         return;
     }
+    // ⇧+ / ⇧− step the blend mode and ⇧⌥ + letter picks one (`blend_keys`). Before the tool
+    // keys, which ignore an extra ⇧ and ⌥: ⇧⌥M is Multiply, not the Marquee (#6446).
+    crate::blend_keys::handle(app, ctx);
     // Tool keys; pressing the key of the current group cycles within it. With Preferences ›
     // Tools › Use Shift Key for Tool Switch, only ⇧+key cycles and the plain key keeps the
     // group's current tool. From another group, the key picks the group's last-used tool.
@@ -706,8 +709,6 @@ pub fn handle(app: &mut PhotocraftApp, ctx: &egui::Context) {
     }
     // 1–0 set opacity, ⇧1–0 flow or fill (`opacity_keys`).
     crate::opacity_keys::handle(app, ctx);
-    // ⇧+ / ⇧− step the blend mode (`blend_keys`).
-    crate::blend_keys::handle(app, ctx);
 }
 
 #[cfg(test)]
