@@ -242,4 +242,41 @@ mod tests {
         let mut none = PhotocraftApp::new(photocraft_engine::Session::new(), Default::default());
         press(&mut none, 1);
     }
+
+    /// #6446: ⇧⌥ with a letter picks a mode directly, as in Photoshop: the layer's with the Move
+    /// tool, the brush's with the Brush; Pass Through only for a group.
+    #[test]
+    fn shift_alt_letters_pick_the_mode() {
+        let ctx = egui::Context::default();
+        let sa = egui::Modifiers::SHIFT | egui::Modifiers::ALT;
+        let mut a = app(Tool::Move);
+        let undo = a.session.active().unwrap().history.past_len();
+        key(&mut a, &ctx, Key::M, sa);
+        assert_eq!(layer_blend(&a), BlendMode::Multiply);
+        key(&mut a, &ctx, Key::S, sa);
+        assert_eq!(layer_blend(&a), BlendMode::Screen);
+        assert_eq!(a.session.active().unwrap().history.past_len(), undo + 2, "one undo step per press");
+        // A pixel layer has no Pass Through.
+        key(&mut a, &ctx, Key::P, sa);
+        assert_eq!(layer_blend(&a), BlendMode::Screen);
+        key(&mut a, &ctx, Key::N, sa);
+        assert_eq!(layer_blend(&a), BlendMode::Normal);
+        // The Brush takes the mode itself and leaves the layer alone.
+        a.ui.tool = Tool::Brush;
+        key(&mut a, &ctx, Key::O, sa);
+        assert_eq!(a.session.tools.brush.mode, BlendMode::Overlay);
+        assert_eq!(layer_blend(&a), BlendMode::Normal);
+        // A group takes Pass Through.
+        a.ui.tool = Tool::Move;
+        a.run("layer.new.group", json!({})).unwrap();
+        key(&mut a, &ctx, Key::X, sa);
+        assert_eq!(layer_blend(&a), BlendMode::Exclusion);
+        key(&mut a, &ctx, Key::P, sa);
+        assert_eq!(layer_blend(&a), BlendMode::PassThrough);
+        // Every letter is unique and names a mode the layer list offers (or Pass Through).
+        for (i, (k, m)) in LETTERS.iter().enumerate() {
+            assert!(LETTERS.iter().skip(i + 1).all(|(o, _)| o != k), "{k:?} twice");
+            assert!(*m == BlendMode::PassThrough || BlendMode::LAYER_MODES.contains(m), "{m:?}");
+        }
+    }
 }
